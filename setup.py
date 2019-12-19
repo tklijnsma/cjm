@@ -11,8 +11,8 @@ setup(
     author_email  = 'tklijnsm@gmail.com',
     packages      = ['cjm'],
     zip_safe      = False,
-    tests_require = ['nose'],
-    test_suite    = 'nose.collector',
+    # tests_require = ['nose'],
+    # test_suite    = 'nose.collector',
     scripts       = [
         'bin/cjm-ls'
         ],
