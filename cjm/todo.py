@@ -2,15 +2,30 @@
 # -*- coding: utf-8 -*-
 import cjm
 import os.path as osp
-import logging, configparser, pprint, copy, types
+import logging, configparser, pprint, copy, os
 from time import strftime
 logger = logging.getLogger('cjm')
 import htcondor
 
+# Patch configparser.ConfigParser deepcopy method
+def configparser_deepcopy(self):
+    try:
+        from StringIO import StringIO
+    except ImportError:
+        from io import StringIO
+    # Create a deep copy of the configuration object
+    config_string = StringIO()
+    self.write(config_string)
+    # Reset the buffer to make it ready for reading.
+    config_string.seek(0)        
+    new_config = ConfigParser.ConfigParser()
+    new_config.readfp(config_string)
+configparser.ConfigParser.__deepcopy__ = configparser_deepcopy
+
+
 class TodoList(object):
     """
     TodoList docstring
-
     """
     def __init__(self, todofile=None):
         """
@@ -19,12 +34,36 @@ class TodoList(object):
         super(TodoList, self).__init__()
         self.todofile = cjm.CONFIG.todofile if todofile is None else todofile
         self.todo = configparser.ConfigParser()
-        self.todo.read(self.todofile)
+        self.read()
 
-    def write(self, config):
+    def read(self):
+        if osp.isfile(self.todofile):
+            self.todo.read(self.todofile)
+            logger.info(
+                'Initializing todo list using file %s; sections detected: %s',
+                self.todofile, self.sections()
+                )
+        else:
+            logger.info('Todo file %s does not exist, keeping empty configparser', self.todofile)
+
+    def write(self, config=None):
+        if config is None: config = self.todo
         logger.info('Overwriting %s', self.todofile)
+        dirname = osp.dirname(self.todofile)
+        if not osp.isdir(dirname):
+            logger.info('Creating directory %s', dirname)
+            os.makedirs(dirname)
         with open(self.todofile, 'w') as f:
             config.write(f)
+        logger.debug('Wrote the following to %s:\n%s', self.todofile, self.read_plain())
+
+    def read_plain(self):
+        """
+        Reads and returns the contents of the todo file as plain text.
+        """
+        with open(self.todofile, 'w').read() as f:
+            contents = f.read()
+        return contents
 
     def push(self, key, dictlike):
         self.todo[key] = dictlike
@@ -33,20 +72,55 @@ class TodoList(object):
         del self.todo[key]
 
     def sections(self):
-        return self.todo.keys()
+        return [ k for k in self.todo.keys() if not k == 'DEFAULT' ]
+
+    def get_todoitem(self, section_title):
+        return HTCondorTodoItem.from_section(section_title, self.todo[section_title])
 
     def update(self):
+        """
+        Reads the queue using the htcondor bindings, and makes an updated todolist.
+        Returns an updated TodoList instance.
+        Does not modify `self`, only the physical todofile.
+        Writes the updated todolist automatically to the todofile.
+        """
         new_todo = configparser.ConfigParser()
         for section_title in self.sections():
-            todo_state = HTCondorTodoItem.from_section(section_title, self.todo[section_title])
+            todo_state = self.get_todoitem(section_title)
             queue_state = HTCondorQueueState(todo_state.cluster_id).read()
             updater = HTCondorUpdater(todo_state, queue_state)
-            new_todo_state = updater.update()
-            status = new_todo_state.is_finished()
+            new_todo_item = updater.update()
+            status = new_todo_item.is_finished()
             if status['finished']:
                 logger.info('Finished, not parsing todo item to next update')
             else:
-                new_todo[section_title] = new_todo_state.parse_todo_item()
+                new_todo[section_title] = new_todo_item.parse_todo_item()
+        self.write(new_todo)
+        return TodoList(self.todofile)
+
+    def submit(self, command_line, monitor_level='high'):
+        """
+        Submits jobs according to the command line, and pushes to this todo file.
+        Returns the key (in this case simply the `cluster_id`) and the updated todolist.
+        Does not modify `self`, only the physical todofile.
+
+        :param command_line: the command line that would normally be submitted to condor_submit
+        :type command_line: list
+        """
+        new_todo = configparser.ConfigParser()
+        cluster_id, n_jobs, output = cjm.utils.submit(command_line)
+        new_item = {
+            'cluster_id' : str(cluster_id),
+            'submission_time' : strftime('%Y-%m-%d %H:%M:%S'),
+            'submission_path' : os.getcwd(),
+            'monitor_level' : monitor_level,
+            'all' : ','.join([ str(i) for i in range(n_jobs)]),
+            'idle' : ','.join([ str(i) for i in range(n_jobs)])
+            }
+        logger.info('Pushing new todo item %s: %s', cluster_id, new_item)
+        new_todo[str(cluster_id)] = new_item
+        self.write(new_todo)
+        return cluster_id, TodoList(self.todofile)
 
 
 class HTCondorTodoItem(object):
@@ -135,12 +209,13 @@ class HTCondorTodoItem(object):
         """
         Sends state dict to log
         """
-        logger.debug(
-            'State for {0}:\n{1}'
-            .format(self.cluster_id, pprint.pformat(
-                { s : [int(j.proc_id) for j in self._jobs_by_state[s]] for s in self.states }
-                ))
-            )
+        # logger.debug(
+        #     'State for {0}:\n{1}'
+        #     .format(self.cluster_id, pprint.pformat(
+        #         { s : [int(j.proc_id) for j in self._jobs_by_state[s]] for s in self.states }
+        #         ))
+        #     )
+        logger.debug('Verbose output for %s:\n%s', self, pprint.pformat(vars(self)))
 
     def get_state(self, job_id):
         return self._jobs_by_procid[job_id].prev_state
@@ -163,13 +238,17 @@ class HTCondorTodoItem(object):
         """
         # Disable deepcopying of the HTCondorJob class
         def override_job_deepcopy(self, memo):
+            logger.debug('deepcopy of %s is overridden, returning shallow', self.__class__)
             return self
         restore = False
         if hasattr(HTCondorJob, '__deepcopy__'):
             _backup_deepcopy = HTCondorJob.__deepcopy__
             restore = True
         HTCondorJob.__deepcopy__ = override_job_deepcopy
+        # Throws error otherwise... kinda weird
+        configparser.SectionProxy.__deepcopy__ = override_job_deepcopy
         # Create the deepcopy of HTCondorTodoItem instance
+        self.debug_log()
         new = copy.deepcopy(self)
         # Restore deepcopying of HTCondorJob class if necessary
         if restore: HTCondorJob.__deepcopy__ = _backup_deepcopy
@@ -180,7 +259,7 @@ class HTCondorTodoItem(object):
             raise ValueError('State {0} does not exist'.format(new_state))
         current_state = job.prev_state
         if current_state == new_state:
-            logger.info('Job %s state change: %s -> %s; doing nothing', proc_id, current_state, new_state)
+            logger.info('Job %s state change: %s -> %s; doing nothing', job.proc_id, current_state, new_state)
         else:
             self._jobs_by_state[current_state].remove(job)
             self._jobs_by_state[new_state].append(job)
@@ -188,8 +267,8 @@ class HTCondorTodoItem(object):
             logger.info('Job %s state change: %s -> %s', job.proc_id, current_state, new_state)
 
     def is_finished(self):
-        done_jobs = self.get_jobs_in_state['done']
-        failed_jobs = self.get_jobs_in_state['failed']
+        done_jobs = self.get_jobs_in_state('done')
+        failed_jobs = self.get_jobs_in_state('failed')
         n_done = len(done_jobs)
         n_failed = len(failed_jobs)
         n_all = len(self.all)
@@ -213,11 +292,11 @@ class HTCondorTodoItem(object):
         """
         # Required attributes
         r = {
-            'cluster_id' : self.cluster_id,
+            'cluster_id' : str(self.cluster_id),
             'submission_path' : self.submission_path
             }
         # Optional attributes
-        for key in [ 'monitor_level', 'submission_time' ]:
+        for key in [ 'monitor_level', 'submission_time', 'all' ]:
             if key in self.section: r[key] = self.section[key]
         # Parse states
         for state in self.states:
@@ -480,12 +559,8 @@ class HTCondorUpdater(object):
         self.new_todo_state = self.todo_state.copy()
 
     def update(self):
-        new_todo_state = self.make_diff()
-
-
-    def make_diff(self):
         logger.debug(
-            'Constructing diff for %s, %s',
+            'Constructing update for %s, %s',
             self.todo_state.section, self.todo_state.cluster_id
             )
         for job in self.todo_state.jobs:
@@ -506,7 +581,7 @@ class HTCondorUpdater(object):
             logger.info('Found matching classad %s for job %s', classad, job)
             classad_found = True
         else:
-            logger.info('Job %s is not listed in the queue_state')
+            logger.info('Job %s is not listed in the queue_state', job)
             classad_found = False
             job.new_state = 'unlisted'
             job.classad = None
@@ -541,7 +616,7 @@ class HTCondorUpdater(object):
             else:
                 exitcode = job.get_exitcode()
                 if exitcode == -2000 or exitcode == 0:
-                    logger.info('Marking job %s as succesfull')
+                    logger.info('Marking job %s as succesfull', job)
                     self.new_todo_state.move(job, 'done')
                 else:
                     self.analyse_failure(job)
@@ -567,7 +642,7 @@ class HTCondorUpdater(object):
             else:
                 exitcode = job.get_exitcode()
                 if exitcode == -2000 or exitcode == 0:
-                    logger.info('Marking job %s as succesfull')
+                    logger.info('Marking job %s as succesfull', job)
                     self.new_todo_state.move(job, 'done')
                 else:
                     self.analyse_failure(job)
@@ -575,6 +650,7 @@ class HTCondorUpdater(object):
             self.message(job, 'no action implemented, doing nothing')
 
     def analyse_failure(self, job):
+        logger.debug('Analyzing failure for job %s', job)
         job.failurecount += 1
         if job.classad:
             if 'HoldReasonCode' in job.classad and int(job.classad['HoldReasonCode']) == 34:
@@ -594,6 +670,8 @@ class HTCondorUpdater(object):
                 job.schedd.act(htcondor.JobAction.Release, job.spec())
                 logger.info('Made edit call the schedd %s', job.schedd)
                 self.new_todo_state.move(job, 'idle')
+            else:
+                self.permanent_failure(job)
         else:
             self.permanent_failure(job)
 
@@ -611,7 +689,7 @@ class HTCondorUpdater(object):
             logger.info(
                 'Some possibly noteworthy information from the classad:\n%s',
                 pprint.pformat({
-                    key : history[key] for key in cjm.CONFIG.interesting_history_keys if key in job.classad
+                    key : job.classad[key] for key in cjm.CONFIG.interesting_history_keys if key in job.classad
                     })
                 )
         stderr = job.get_stderr()

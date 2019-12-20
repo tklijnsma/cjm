@@ -1,0 +1,10 @@
+universe = vanilla
+executable = cjmtestjob.sh
+output = job_$(Cluster).$(Process).stdout
+error = job_$(Cluster).$(Process).stderr
+log = job_$(Cluster).$(Process).log
+x509userproxy = /uscms/home/klijnsma/x509up_u55957
+environment = "TESTVAR='BLA1' CONDOR_CLUSTER_NUMBER='$(Cluster)'"
+on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)
+
+queue 1 arguments in 1001

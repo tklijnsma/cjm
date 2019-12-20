@@ -4,11 +4,27 @@ try:
 except ImportError:
     from unittest.mock import Mock, MagicMock, patch
 import logging, os, sys, copy, tempfile
+import os.path as osp
 
 
 # ____________________________________________________
 # Mocking htcondor python bindings for dev
 
+def setup_testlogger():
+    formatter = logging.Formatter(
+        fmt = '[basictestlogger|%(levelname)8s|%(asctime)s|%(module)s]: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+        )
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    logger = logging.getLogger('testlogger')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    return logger
+logger = setup_testlogger()
+
+tests_dir = osp.dirname(osp.abspath(__file__))
+os.environ['CJM_DIR'] = tests_dir
 os.environ['CJM_CONF'] = 'test'
 
 class FakeClassAd(dict):
@@ -71,7 +87,7 @@ class TestHTCondorMockSetup(TestCase):
 class TestBasic(TestHTCondorMockSetup):
 
     def test_imported_htcondor_is_mock(self):
-        self.assertIsInstance(cjm.htcondor, MagicMock)
+        self.assertIsInstance(cjm.todo.htcondor, MagicMock)
 
     def test_mocked_schedd_returns_fake_ad(self):
         qstate = cjm.HTCondorQueueState('63826560')
@@ -86,16 +102,18 @@ class TestBasic(TestHTCondorMockSetup):
     def test_make_diff(self):
         qstate = cjm.HTCondorQueueState('63826560').read()
         diff = cjm.HTCondorUpdater(self.todo_state, qstate)
-        diff.make_diff()
+        diff.update()
 
     def test_get_history(self):
         history = cjm.utils.get_job_history_htcondor(cluster_id='9999', proc_id='9', schedd=htcondor.Schedd())
         self.assertEqual(history['JobStatus'], 5)
 
     def test_copy_todo_item_is_shallow_for_job_instances(self):
+        self.todo_state.jobs[0].testlist = ['test']
         new_todo_state = self.todo_state.copy()
         self.assertIsNot(self.todo_state.jobs, new_todo_state.jobs)
         self.assertIs(self.todo_state.jobs[0], new_todo_state.jobs[0])
+        self.assertIs(self.todo_state.jobs[0].testlist, new_todo_state.jobs[0].testlist)
 
     def test_move_job(self):
         job = self.todo_state.jobs[0]
@@ -112,12 +130,12 @@ class TestDiff(TestHTCondorMockSetup):
 
     def test_make_diff(self):
         qstate, diff = self.get_basic_diff()
-        diff.make_diff()
+        diff.update()
 
     def test_makes_permanent_failure_for_removed_status(self):
         self.ads[0]['JobStatus'] = 3
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.make_diff()
+        new_todo_state = diff.update()
         self.assertEqual(new_todo_state.get_jobs_in_state('failed')[0].proc_id, self.ads[0].proc_id)
 
     def test_resubmit_for_memory_exceeding(self):
@@ -125,7 +143,7 @@ class TestDiff(TestHTCondorMockSetup):
         ad['HoldReasonCode'] = 34
         ad['MemoryUsage'] = 2100
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.make_diff()
+        new_todo_state = diff.update()
         htcondor.Schedd.return_value.edit.assert_called_with(
             '{0}.{1}'.format(ad['ClusterId'], ad['ProcId']),
             'RequestMemory',
@@ -137,7 +155,7 @@ class TestDiff(TestHTCondorMockSetup):
         del self.ads[1]
         self.ads[0]['ExitCode'] = 0 # history is mocked to return first ad, this is hacky
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.make_diff()
+        new_todo_state = diff.update()
         self.assertEqual(new_todo_state.get_jobs_in_state('done')[0].proc_id, ad['ProcId'])
 
     def test_becomes_failed_for_unlisted_exitcode_nonzero(self):
@@ -145,7 +163,7 @@ class TestDiff(TestHTCondorMockSetup):
         del self.ads[1]
         self.ads[0]['ExitCode'] = 9 # history is mocked to return first ad, this is hacky
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.make_diff()
+        new_todo_state = diff.update()
         self.assertEqual(new_todo_state.get_jobs_in_state('failed')[0].proc_id, ad['ProcId'])
 
 
@@ -153,17 +171,36 @@ class TestUtils(TestCase):
 
     def test_tail(self):
         fd, path = tempfile.mkstemp()
+        logger.info('Opened tmpfile %s', path)
         try:
             with os.fdopen(fd, 'w') as tmp:
                 # do stuff with temp file
                 for i in range(10,0,-1):
                     tmp.write('line{0}\n'.format(i))
-
             lines = cjm.utils.tail(path, 3)
             expected_lines = ['line3', 'line2', 'line1']
             self.assertEqual(lines, expected_lines)
         finally:
             os.remove(path)
+
+    def test_submit(self):
+        try:
+            _bu_run_command = cjm.utils.run_command
+            cjm.utils.run_command = MagicMock()
+            cjm.utils.run_command.return_value = [
+                'Querying the CMS LPC pool and trying to find an available schedd...',
+                '',
+                'Attempting to submit jobs to lpcschedd2.fnal.gov',
+                '',
+                'Submitting job(s).....',
+                '5 job(s) submitted to cluster 34236250.',
+                ]
+            cluster_id, n_jobs, output = cjm.utils.submit(['some command line'])
+            self.assertEqual(cluster_id, 34236250)
+            self.assertEqual(n_jobs, 5)
+        finally:
+            cjm.utils.run_command = _bu_run_command
+
 
 
 

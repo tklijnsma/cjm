@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import os, shutil, logging, sys, subprocess
+import os, shutil, logging, sys, subprocess, re
 import os.path as osp
 import cjm
 logger = logging.getLogger('cjm')
@@ -154,12 +154,33 @@ def tail(file, n=10):
     return run_command(['tail', '-n', str(n), file])
 
 
+def submit(command_line):
+    """
+    Substitute for the condor_submit command. Expects a list, and
+    will convert to a 1 element list if given a string.
+    (Since it is passed as a shell=True command to subprocess, it
+    does not matter)
+    condor_submit is wrapped on LPC, so for now keep this command
+    line option rather than using the python config
+    """
+    from six import string_types
+    if isinstance(command_line, string_types):
+        command_line = [command_line]
+    if not command_line[0].startswith('condor_submit'):
+        command_line.insert(0, 'condor_submit')
+    output = run_command(command_line, shell=True)
 
+    for line in output:
+        match = re.match(r'(\d+) job\(s\) submitted to cluster (\d+)\.', line)
+        if match:
+            n_jobs = int(match.group(1))
+            cluster_id = int(match.group(2))
+    logger.info('Submitted %s jobs to cluster_id %s', n_jobs, cluster_id)
+    return cluster_id, n_jobs, output
 
-
-
-
-
-
-
+def remove(cluster_id):
+    import htcondor
+    logger.info('Removing cluster_id %s from queue', cluster_id)
+    for schedd in cjm.CONFIG.schedds:
+        schedd.act(htcondor.JobAction.Remove, 'ClusterId=={0}'.format(cluster_id))
 

@@ -14,6 +14,8 @@ setup(
     # tests_require = ['nose'],
     # test_suite    = 'nose.collector',
     scripts       = [
-        'bin/cjm-ls'
+        'bin/cjm-ls',
+        'bin/cjm-submit',
+        'bin/cjm-update',
         ],
     )

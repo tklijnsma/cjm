@@ -9,7 +9,6 @@ DEFAULT_LOGGER_FORMATTER = logging.Formatter(
 
 DEFAULT_LOGGER_NAME = 'cjm'
 
-
 def setup_logger(name=DEFAULT_LOGGER_NAME, formatter=DEFAULT_LOGGER_FORMATTER):
     """
     Creates a logger
@@ -27,3 +26,11 @@ def setup_logger(name=DEFAULT_LOGGER_NAME, formatter=DEFAULT_LOGGER_FORMATTER):
     logger.setLevel(logging.DEBUG)
     logger.addHandler(handler)
     return logger
+
+def add_file_handler(filename):
+    handler = logging.FileHandler(filename)
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger('cjm')
+    logger.addHandler(handler)
+    logger.info('Started logging to %s', filename)
