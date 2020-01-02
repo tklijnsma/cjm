@@ -14,7 +14,7 @@ def main():
     if args.todofile: cjm.CONFIG.set_todofile(args.todofile)
     cjm.logger.info('monitorlevel set to %s; currently ignored, to be implemented', args.monitorlevel)
     # Pass to condor_submit
-    cjm.TodoFile().submit(condor_submit_args)
+    cjm.TodoList().submit(condor_submit_args)
 
 if __name__ == '__main__':
     main()

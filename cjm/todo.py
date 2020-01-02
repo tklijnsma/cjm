@@ -61,7 +61,7 @@ class TodoList(object):
         """
         Reads and returns the contents of the todo file as plain text.
         """
-        with open(self.todofile, 'w').read() as f:
+        with open(self.todofile, 'r') as f:
             contents = f.read()
         return contents
 

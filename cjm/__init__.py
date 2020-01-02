@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, sys
 import os.path as osp
-from .logger import setup_logger, add_file_handler
+from .logger import setup_logger, add_file_handler, add_rotating_file_handler, RotatingFileHandler
 logger = setup_logger()
 
 from . import utils

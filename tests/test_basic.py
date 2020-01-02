@@ -3,7 +3,7 @@ try:
     from mock import Mock, MagicMock, patch
 except ImportError:
     from unittest.mock import Mock, MagicMock, patch
-import logging, os, sys, copy, tempfile
+import logging, os, sys, copy, tempfile, glob
 import os.path as osp
 
 
@@ -202,8 +202,59 @@ class TestUtils(TestCase):
             cjm.utils.run_command = _bu_run_command
 
 
+class TestRotatingFileHandler(TestCase):
 
+    filename = osp.join(osp.dirname(__file__), 'rotatingtest.log')
 
+    def tearDown(self):
+        for f in self.get_files():
+            os.remove(f)
 
+    def get_files(self):
+        return glob.glob(self.filename + '*')
 
+    def count(self):
+        return len(self.get_files())
+
+    def logfile_contains(self, logfile, text):
+        if not osp.isfile(logfile):
+            logger.error('%s does not exist', logfile)
+            return False
+        with open(logfile) as f:
+            contents = f.read()
+        return text in contents
+
+    def test_basic_rotating_file_handler(self):
+        self.assertEqual(self.count(), 0)
+        handler = cjm.RotatingFileHandler(self.filename)
+        self.assertEqual(self.count(), 1)
+
+        logger = logging.getLogger('tmp')
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+        logger.info('####test1####')
+        self.assertTrue(self.logfile_contains(self.filename, '####test1####'))
+
+        handler.perform_rotation()
+        self.assertEqual(self.count(), 2)
+        self.assertTrue(self.logfile_contains(self.filename + '.1', '####test1####'))
+
+        logger.info('####test2####')
+        self.assertTrue(self.logfile_contains(self.filename, '####test2####'))
+
+    def test_adding_rotating_file_handler(self):
+        self.assertEqual(self.count(), 0)
+        handler = cjm.add_rotating_file_handler(self.filename)
+        self.assertEqual(self.count(), 1)
+
+        cjm.logger.info('####test1####')
+        self.assertTrue(self.logfile_contains(self.filename, '####test1####'))
+
+        handler.perform_rotation()
+        self.assertEqual(self.count(), 2)
+        self.assertTrue(self.logfile_contains(self.filename + '.1', '####test1####'))
+
+        cjm.logger.info('####test2####')
+        self.assertTrue(self.logfile_contains(self.filename, '####test2####'))
 
