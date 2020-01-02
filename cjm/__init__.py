@@ -5,8 +5,14 @@ import os.path as osp
 from .logger import setup_logger, add_file_handler, add_rotating_file_handler, RotatingFileHandler
 logger = setup_logger()
 
-from . import utils
+if 'CJM_ROTFILEHANDLER' in os.environ:
+    # Fix logging to a file before any other configuration to also save the logging
+    # emitted *during* the configuration
+    add_rotating_file_handler(os.environ['CJM_ROTFILEHANDLER'], delete_other_handlers=True)
 
+logger.info('Running with env: %s', os.environ)
+
+from . import utils
 
 # Default dir to save files related to the module
 if 'CJM_DIR' in os.environ:
@@ -51,7 +57,6 @@ def reload_config(config_name):
 
 # Default config
 CONFIG = reload_config(CJM_CONF)
-
 
 from .cluster import Cluster
 from .todo import TodoList, HTCondorTodoItem, HTCondorQueueState, HTCondorUpdater

@@ -88,8 +88,7 @@ class TodoList(object):
         for section_title in self.sections():
             todo_state = self.get_todoitem(section_title)
             queue_state = HTCondorQueueState(todo_state.cluster_id).read()
-            updater = HTCondorUpdater(todo_state, queue_state)
-            new_todo_item = updater.update()
+            new_todo_item = HTCondorUpdater(todo_state, queue_state).update()
             status = new_todo_item.is_finished()
             if status['finished']:
                 logger.info('Finished, not parsing todo item to next update')
@@ -215,7 +214,8 @@ class HTCondorTodoItem(object):
         #         { s : [int(j.proc_id) for j in self._jobs_by_state[s]] for s in self.states }
         #         ))
         #     )
-        logger.debug('Verbose output for %s:\n%s', self, pprint.pformat(vars(self)))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('Verbose output for %s:\n%s', self, pprint.pformat(vars(self)))
 
     def get_state(self, job_id):
         return self._jobs_by_procid[job_id].prev_state
@@ -267,16 +267,16 @@ class HTCondorTodoItem(object):
             logger.info('Job %s state change: %s -> %s', job.proc_id, current_state, new_state)
 
     def is_finished(self):
-        done_jobs = self.get_jobs_in_state('done')
-        failed_jobs = self.get_jobs_in_state('failed')
+        done_jobs = [ j.proc_id for j in self.get_jobs_in_state('done')]
+        failed_jobs = [ j.proc_id for j in self.get_jobs_in_state('failed')]
         n_done = len(done_jobs)
         n_failed = len(failed_jobs)
         n_all = len(self.all)
         if set(done_jobs + failed_jobs) == set(self.all):
             finished = True
             logger.info(
-                'Todo item {0} is finished: {1} ({2:.2f}%) done, {3} ({4:.2f}%) failed',
-                self, n_done, (100.*n_done)/n_all, n_failed, (100.*n_failed)/n_all
+                'Todo item {0} is finished: {1} ({2:.2f}%) done, {3} ({4:.2f}%) failed'
+                .format(self, n_done, (100.*n_done)/n_all, n_failed, (100.*n_failed)/n_all)
                 )
         else:
             finished = False
@@ -565,6 +565,8 @@ class HTCondorUpdater(object):
             )
         for job in self.todo_state.jobs:
             self.process(job)
+        logger.debug('Newly created todo item after update:')
+        self.new_todo_state.debug_log()
         return self.new_todo_state
 
     def message(self, job, msg):

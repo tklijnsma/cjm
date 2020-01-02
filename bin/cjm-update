@@ -13,21 +13,23 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-t', '--todofile', type=str, help='Path to the todo-file (uses cjm default if unspecified)')
 parser.add_argument('-c', '--config', type=str, help='Name of the configuration to be loaded (uses cjm default if unspecified)')
 parser.add_argument('-l', '--logfile', type=str, default='~/.cjm/update.log', help='Logfile to direct output to')
-parser.add_argument('-v', '--verbose', action='store_true', help='Overwrites the logging to a file, and logs to stderr instead')
+parser.add_argument('-v', '--verbose', action='store_true', help='Cancels the logging to a file, sets logging level to debug, and logs to stderr instead')
 args = parser.parse_args()
 
 def main():
     try:
         if args.config: os.environ['CJM_CONF'] = args.config
-        import cjm
         if not args.verbose:
-            logfile = os.path.expanduser(args.logfile)
-            cjm.add_file_handler(logfile, delete_other_handlers=True)
+            os.environ['CJM_ROTFILEHANDLER'] = os.path.expanduser(args.logfile)
+        import cjm
         if args.todofile: cjm.CONFIG.set_todofile(args.todofile)
         cjm.TodoList().update()
     except Exception as e:
-        print('There was an error. Traceback:')
-        traceback.print_exc()
+        # Try to add the traceback to the logfile:
+        with open(os.path.expanduser(args.logfile), 'a') as f:
+            f.write('There was an error. Traceback:\n')
+            f.write(traceback.format_exc())
+        raise
 
 if __name__ == '__main__':
     main()

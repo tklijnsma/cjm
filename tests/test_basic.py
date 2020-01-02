@@ -166,6 +166,23 @@ class TestDiff(TestHTCondorMockSetup):
         new_todo_state = diff.update()
         self.assertEqual(new_todo_state.get_jobs_in_state('failed')[0].proc_id, ad['ProcId'])
 
+    def test_is_finished(self):
+        del self.todo_state_dict['idle']
+        self.todo_state_dict['done'] = '0'
+        self.todo_state_dict['failed'] = '1'
+        self.todo_state = cjm.HTCondorTodoItem.from_section('test', self.todo_state_dict)
+        self.todo_state.debug_log()
+        self.assertTrue(self.todo_state.is_finished()['finished'])
+
+    def test_is_finished_after_update(self):
+        del self.todo_state_dict['idle']
+        self.todo_state_dict['done'] = '0'
+        self.todo_state_dict['failed'] = '1'
+        self.todo_state = cjm.HTCondorTodoItem.from_section('test', self.todo_state_dict)
+        htcondor.Schedd.return_value.xquery.return_value = []
+        qstate, diff = self.get_basic_diff()
+        new_todo_state = diff.update()
+        self.assertTrue(new_todo_state.is_finished()['finished'])
 
 class TestUtils(TestCase):
 
