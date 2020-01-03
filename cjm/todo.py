@@ -41,7 +41,7 @@ class TodoList(object):
             self.todo.read(self.todofile)
             logger.info(
                 'Initializing todo list using file %s; sections detected: %s',
-                self.todofile, self.sections()
+                self.todofile, self.get_section_titles()
                 )
         else:
             logger.info('Todo file %s does not exist, keeping empty configparser', self.todofile)
@@ -71,11 +71,20 @@ class TodoList(object):
     def pop(self, key):
         del self.todo[key]
 
-    def sections(self):
+    def get_section_titles(self):
         return [ k for k in self.todo.keys() if not k == 'DEFAULT' ]
 
-    def get_todoitem(self, section_title):
-        return HTCondorTodoItem.from_section(section_title, self.todo[section_title])
+    def get_todoitem(self, cluster_id):
+        """
+        Returns an HTCondorTodoItem instance for cluster `cluster_id`
+        """
+        return HTCondorTodoItem.from_section(cluster_id, self.todo[cluster_id])
+
+    def get_queuestate(self, cluster_id):
+        """
+        Returns an HTCondorQueueState instance for cluster `cluster_id`
+        """
+        return HTCondorQueueState(todoitem.cluster_id).read()
 
     def update(self):
         """
@@ -85,15 +94,17 @@ class TodoList(object):
         Writes the updated todolist automatically to the todofile.
         """
         new_todo = configparser.ConfigParser()
-        for section_title in self.sections():
-            todo_state = self.get_todoitem(section_title)
-            queue_state = HTCondorQueueState(todo_state.cluster_id).read()
-            new_todo_item = HTCondorUpdater(todo_state, queue_state).update()
-            status = new_todo_item.is_finished()
+        for section_title in self.get_section_titles():
+            # Key `cluster_id` is expected to exist in the section
+            cluster_id = self.todo['cluster_id']
+            todoitem = self.get_todoitem(cluster_id)
+            queuestate = self.get_queuestate(cluster_id)
+            new_todoitem = HTCondorUpdater(todoitem, queuestate).update()
+            status = new_todoitem.is_finished()
             if status['finished']:
                 logger.info('Finished, not parsing todo item to next update')
             else:
-                new_todo[section_title] = new_todo_item.parse_todo_item()
+                new_todo[cluster_id] = new_todoitem.parse_todoitem()
         self.write(new_todo)
         return TodoList(self.todofile)
 
@@ -149,6 +160,7 @@ class HTCondorTodoItem(object):
         # subject to change, and not part of the api
         self._jobs_by_procid = {}
         self._jobs_by_state = {}
+        self.status = None
 
     def __repr__(self):
         return super(HTCondorTodoItem, self).__repr__().replace('object', 'object {0}'.format(self.cluster_id))
@@ -267,6 +279,10 @@ class HTCondorTodoItem(object):
             logger.info('Job %s state change: %s -> %s', job.proc_id, current_state, new_state)
 
     def is_finished(self):
+        """
+        Counts done, failed, and all jobs, and determines whether the job is finished.
+        Returns a dict.
+        """
         done_jobs = [ j.proc_id for j in self.get_jobs_in_state('done')]
         failed_jobs = [ j.proc_id for j in self.get_jobs_in_state('failed')]
         n_done = len(done_jobs)
@@ -286,7 +302,13 @@ class HTCondorTodoItem(object):
             'n_failed' : n_failed,
             }
 
-    def parse_todo_item(self):
+    def compute_status(self):
+        """
+        Sets the `status` attribute to a dict with high-level information regarding the job
+        """
+        self.status = self.is_finished()
+
+    def parse_todoitem(self):
         """
         Returns a dict suitable for parsing to a todo file
         """
@@ -318,16 +340,16 @@ class HTCondorJob(object):
         # Variables to keep track of what information is present for this job
         self._isset_prev_state = False
         self._isset_failurecount = False
-        self._isset_queue_state = False
-        self._isset_todo_item = False
+        self._isset_queuestate = False
+        self._isset_todoitem = False
         self._iscalled_history = False
 
-    def set_parent_todo_item(self, todo_item):
+    def set_parent_todoitem(self, todoitem):
         """
-        Setter for the parent todo_item
+        Setter for the parent todoitem
         """
-        self.todo_item = todo_item
-        self._isset_todo_item = True
+        self.todoitem = todoitem
+        self._isset_todoitem = True
 
     def set_prev_state(self, state):
         """
@@ -343,12 +365,12 @@ class HTCondorJob(object):
         self.failurecount = failurecount
         self._isset_failurecount = True
 
-    def set_queuestate(self, queue_state, classad):
-        self.queue_state = queue_state
+    def set_queuestate(self, queuestate, classad):
+        self.queuestate = queuestate
         self.classad = classad
         self.new_state = self.classad.state
         self.schedd = self.classad.schedd
-        self._isset_queue_state = True
+        self._isset_queuestate = True
 
     def __repr__(self):
         return super(HTCondorJob, self).__repr__().replace(
@@ -387,13 +409,13 @@ class HTCondorJob(object):
         else:
             logger.info('stderr_file %s looks like a relative path; finding submission_path')
             # Need the submission path from the parent; path to stderr is typically relative
-            if not self._isset_todo_item:
-                logger.info('No parent todo_item set')
+            if not self._isset_todoitem:
+                logger.info('No parent todoitem set')
                 return
-            if not getattr(self.todo_item, 'submission_path', None):
-                logger.info('Parent todo_item %s does not have a submission_path set', self.todo_item)
+            if not getattr(self.todoitem, 'submission_path', None):
+                logger.info('Parent todoitem %s does not have a submission_path set', self.todoitem)
                 return
-            stderr_file = osp.join(osp.abspath(self.todo_item.submission_path), stderr_file)
+            stderr_file = osp.join(osp.abspath(self.todoitem.submission_path), stderr_file)
             logger.info('Using stderr_file %s', stderr_file)
         return stderr_file
 
@@ -542,32 +564,29 @@ class HTCondorQueueState(object):
 
 
 class HTCondorUpdater(object):
-    """docstring for HTCondorUpdater"""
-    def __init__(self, todo_state, queue_state):
+    """
+    Updates a todoitem (HTCondorTodoItem) from the todofile based on the
+    current state of the htcondor queue (HTCondorQueueState).
+    This class contains the main functionalities of this package.
+    """
+    def __init__(self, todoitem, queuestate):
         super(HTCondorUpdater, self).__init__()
-        self.todo_state = todo_state
-        self.queue_state = queue_state
-        self.equivalency_map = {
-            'idle' : 1,
-            'running' : 2,
-            'removed' : 3,
-            'completed' : 4,
-            'held' : 5,
-            'transferring' : 6,
-            'suspended' : 7
-            }
-        self.new_todo_state = self.todo_state.copy()
+        self.todoitem = todoitem
+        self.queuestate = queuestate
+        # Create a new todoitem, starting out as just a copy
+        self.new_todoitem = self.todoitem.copy()
 
     def update(self):
         logger.debug(
             'Constructing update for %s, %s',
-            self.todo_state.section, self.todo_state.cluster_id
+            self.todoitem.section, self.todoitem.cluster_id
             )
-        for job in self.todo_state.jobs:
+        for job in self.todoitem.jobs:
             self.process(job)
+        self.new_todoitem.compute_status()
         logger.debug('Newly created todo item after update:')
-        self.new_todo_state.debug_log()
-        return self.new_todo_state
+        self.new_todoitem.debug_log()
+        return self.new_todoitem
 
     def message(self, job, msg):
         logger.debug(
@@ -576,14 +595,19 @@ class HTCondorUpdater(object):
             )
 
     def process(self, job):
+        """
+        Based on the current queuestate, this function changes the state of the job
+        in the new_todoitem, analyzes failres, attempts resubmission of the job, and
+        marks noteworthy events for a potential email.
+        """
         # Look for a matching classad in the retrieved queue state
-        if self.queue_state.has_proc_id(job.proc_id):
-            classad = self.queue_state.get_classad(job.proc_id)
-            job.set_queuestate(self.queue_state, classad)
+        if self.queuestate.has_proc_id(job.proc_id):
+            classad = self.queuestate.get_classad(job.proc_id)
+            job.set_queuestate(self.queuestate, classad)
             logger.info('Found matching classad %s for job %s', classad, job)
             classad_found = True
         else:
-            logger.info('Job %s is not listed in the queue_state', job)
+            logger.info('Job %s is not listed in the queuestate', job)
             classad_found = False
             job.new_state = 'unlisted'
             job.classad = None
@@ -593,24 +617,26 @@ class HTCondorUpdater(object):
             job.proc_id, job.prev_state, job.new_state
             )
 
+        # Convenience functions for a few common job state changes
         same_state = lambda: self.message(job, 'state unchanged, doing nothing')
         no_further_action = lambda: self.message(job, 'state changed, no further action')
 
-        if job.new_state == 1:
+        # Go through all the scenario's of state changes
+        if job.new_state == 1: # idle
             if job.prev_state == 'idle':
                 same_state()
             else:
                 no_further_action()
-                self.new_todo_state.move(job, 'idle')
-        elif job.new_state == 2:
+                self.new_todoitem.move(job, 'idle')
+        elif job.new_state == 2: # running
             if job.prev_state == 'running':
                 same_state()
             else:
                 self.message(job, 'started running')
-                self.new_todo_state.move(job, 'running')
-        elif job.new_state == 3:
+                self.new_todoitem.move(job, 'running')
+        elif job.new_state == 3: # removed
             self.permanent_failure(job)
-        elif job.new_state == 4:
+        elif job.new_state == 4: # completed
             if job.prev_state == 'done':
                 same_state()
             elif job.prev_state == 'failed':
@@ -619,23 +645,23 @@ class HTCondorUpdater(object):
                 exitcode = job.get_exitcode()
                 if exitcode == -2000 or exitcode == 0:
                     logger.info('Marking job %s as succesfull', job)
-                    self.new_todo_state.move(job, 'done')
+                    self.new_todoitem.move(job, 'done')
                 else:
                     self.analyse_failure(job)
-        elif job.new_state == 5:
+        elif job.new_state == 5: # held
             self.analyse_failure(job)
-        elif job.new_state == 6:
+        elif job.new_state == 6: # transferring
             if job.prev_state == 'transferring':
                 same_state()
             else:
                 self.message(job, 'started running')
-                self.new_todo_state.move(job, 'transferring')
-        elif job.new_state == 7:
+                self.new_todoitem.move(job, 'transferring')
+        elif job.new_state == 7: # suspended
             if job.prev_state == 'failed':
                 self.message(job, 'previously marked as failed, doing nothing')
             else:
                 self.permanent_failure(job)
-        elif job.new_state == 'unlisted':
+        elif job.new_state == 'unlisted': # job is not in the queuestate
             if job.prev_state == 'done' or job.prev_state == 'failed':
                 self.message(
                     job,
@@ -645,7 +671,7 @@ class HTCondorUpdater(object):
                 exitcode = job.get_exitcode()
                 if exitcode == -2000 or exitcode == 0:
                     logger.info('Marking job %s as succesfull', job)
-                    self.new_todo_state.move(job, 'done')
+                    self.new_todoitem.move(job, 'done')
                 else:
                     self.analyse_failure(job)
         else:
@@ -671,7 +697,7 @@ class HTCondorUpdater(object):
                     )
                 job.schedd.act(htcondor.JobAction.Release, job.spec())
                 logger.info('Made edit call the schedd %s', job.schedd)
-                self.new_todo_state.move(job, 'idle')
+                self.new_todoitem.move(job, 'idle')
             else:
                 self.permanent_failure(job)
         else:
@@ -697,7 +723,7 @@ class HTCondorUpdater(object):
         stderr = job.get_stderr()
         if stderr:
             logger.info('Tail of %s:\n%s', stderr['file'], stderr['stderr'])
-        self.new_todo_state.move(job, 'failed')
+        self.new_todoitem.move(job, 'failed')
 
 
 

@@ -72,6 +72,11 @@ class Config(object):
         else:
             self.set_todofile(osp.join(cjm.CJM_DIR, 'todo'))
 
+        if 'notification_email' in self.section:
+            self.notification_email = self.section['notification_email']
+        else:
+            self.notification_email = None
+
         self.interesting_history_keys = [
             'ProcId',
             'ClusterId',
