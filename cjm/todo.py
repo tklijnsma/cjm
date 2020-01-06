@@ -27,14 +27,22 @@ class TodoList(object):
     """
     TodoList docstring
     """
-    def __init__(self, todofile=None):
+
+    def __init__(self, todofile=None, _dict=None):
         """
         Constructor method
         """
         super(TodoList, self).__init__()
         self.todofile = cjm.CONFIG.todofile if todofile is None else todofile
         self.todo = configparser.ConfigParser()
-        self.read()
+        if _dict:
+            self.todo.read_dict(_dict)
+            logger.info(
+                'Initializing TodoList using dict %s; sections detected: %s',
+                _dict, self.get_section_titles()
+                )
+        elif self.todofile:
+            self.read()
 
     def read(self):
         if osp.isfile(self.todofile):
@@ -84,7 +92,7 @@ class TodoList(object):
         """
         Returns an HTCondorQueueState instance for cluster `cluster_id`
         """
-        return HTCondorQueueState(todoitem.cluster_id).read()
+        return HTCondorQueueState(cluster_id).read()
 
     def update(self):
         """
@@ -93,18 +101,22 @@ class TodoList(object):
         Does not modify `self`, only the physical todofile.
         Writes the updated todolist automatically to the todofile.
         """
+        logger.debug('Begin updating, section titles = %s', self.get_section_titles())
         new_todo = configparser.ConfigParser()
+        # Instantiates an email class, which will be filled with noteworthy events
+        email = cjm.Email()
         for section_title in self.get_section_titles():
             # Key `cluster_id` is expected to exist in the section
-            cluster_id = self.todo['cluster_id']
+            cluster_id = self.todo[section_title]['cluster_id']
             todoitem = self.get_todoitem(cluster_id)
             queuestate = self.get_queuestate(cluster_id)
-            new_todoitem = HTCondorUpdater(todoitem, queuestate).update()
+            new_todoitem = HTCondorUpdater(todoitem, queuestate, email=email).update()
             status = new_todoitem.is_finished()
             if status['finished']:
                 logger.info('Finished, not parsing todo item to next update')
             else:
                 new_todo[cluster_id] = new_todoitem.parse_todoitem()
+        email.send_email()
         self.write(new_todo)
         return TodoList(self.todofile)
 
@@ -175,6 +187,8 @@ class HTCondorTodoItem(object):
         # Keys with a default
         self.monitor_level = self.section.get('monitor_level', 'high')
         self.submission_time = self.section.get('submission_time', None)
+        self.total_failure_count = int(self.section.get('total_failure_count', 0))
+        self.total_resubmission_count = int(self.section.get('total_resubmission_count', 0))
         self.get_job_instances()
         return self
 
@@ -228,6 +242,12 @@ class HTCondorTodoItem(object):
         #     )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Verbose output for %s:\n%s', self, pprint.pformat(vars(self)))
+
+    def get_n_jobs(self):
+        """
+        Returns the total number of jobs tracked in this todoitem
+        """
+        return len(self.all)
 
     def get_state(self, job_id):
         return self._jobs_by_procid[job_id].prev_state
@@ -287,7 +307,7 @@ class HTCondorTodoItem(object):
         failed_jobs = [ j.proc_id for j in self.get_jobs_in_state('failed')]
         n_done = len(done_jobs)
         n_failed = len(failed_jobs)
-        n_all = len(self.all)
+        n_all = self.get_n_jobs()
         if set(done_jobs + failed_jobs) == set(self.all):
             finished = True
             logger.info(
@@ -315,7 +335,9 @@ class HTCondorTodoItem(object):
         # Required attributes
         r = {
             'cluster_id' : str(self.cluster_id),
-            'submission_path' : self.submission_path
+            'submission_path' : self.submission_path,
+            'total_failure_count' : str(self.total_failure_count),
+            'total_resubmission_count' : str(self.total_resubmission_count)
             }
         # Optional attributes
         for key in [ 'monitor_level', 'submission_time', 'all' ]:
@@ -419,14 +441,27 @@ class HTCondorJob(object):
             logger.info('Using stderr_file %s', stderr_file)
         return stderr_file
 
-    def get_stderr(self):
+    def _get_stderr(self):
         stderr_file = self._get_stderr_filename()
         if not stderr_file:
-            return
+            return False
         elif not osp.isfile(stderr_file):
             logger.warning('%s is not a file, cannot retrieve stderr')
-            return
-        return {'file' : stderr_file, 'stderr' : cjm.utils.tail(stderr_file, 10)}
+            return False
+        self.stderr_file = stderr_file
+        self.stderr = cjm.utils.tail(stderr_file, 10)
+        return True
+
+    def get_stderr(self):
+        if self.stderr is False:
+            logger.debug('Retrieving stderr failed previously, not trying again')
+            return None
+        elif self.stderr is None:
+            success = self._get_stderr()
+            if not success:
+                self.stderr = False
+                return None
+        return self.stderr
 
     def get_jobstatus_from_classad(self):
         if self.classad and 'JobStatus' in self.classad:
@@ -569,12 +604,13 @@ class HTCondorUpdater(object):
     current state of the htcondor queue (HTCondorQueueState).
     This class contains the main functionalities of this package.
     """
-    def __init__(self, todoitem, queuestate):
+    def __init__(self, todoitem, queuestate, email=None):
         super(HTCondorUpdater, self).__init__()
         self.todoitem = todoitem
         self.queuestate = queuestate
         # Create a new todoitem, starting out as just a copy
         self.new_todoitem = self.todoitem.copy()
+        self.email = email
 
     def update(self):
         logger.debug(
@@ -586,7 +622,21 @@ class HTCondorUpdater(object):
         self.new_todoitem.compute_status()
         logger.debug('Newly created todo item after update:')
         self.new_todoitem.debug_log()
+        # Send possible events to email.
+        # The Email class will determine whether an email should actually be sent.
+        self.email_event(cjm.EventCodes.cluster_finished, self.new_todoitem)
+        self.email_event(cjm.EventCodes.monitoring, self.new_todoitem, old_todoitem=self.todoitem)
         return self.new_todoitem
+
+    def email_event(self, event_code, todoitem, **kwargs):
+        """
+        If the HTCondorUpdater instance has an email attribute, this method
+        registers that something noteworthy might have happened to the email.
+        The email will determine exactly whether the event is noteworthy enough
+        to warrant an actual email to be sent.
+        """
+        if not self.email: return
+        self.email.make_event(event_code, todoitem, **kwargs)
 
     def message(self, job, msg):
         logger.debug(
@@ -647,9 +697,9 @@ class HTCondorUpdater(object):
                     logger.info('Marking job %s as succesfull', job)
                     self.new_todoitem.move(job, 'done')
                 else:
-                    self.analyse_failure(job)
+                    self.attempt_resubmission(job)
         elif job.new_state == 5: # held
-            self.analyse_failure(job)
+            self.attempt_resubmission(job)
         elif job.new_state == 6: # transferring
             if job.prev_state == 'transferring':
                 same_state()
@@ -673,11 +723,11 @@ class HTCondorUpdater(object):
                     logger.info('Marking job %s as succesfull', job)
                     self.new_todoitem.move(job, 'done')
                 else:
-                    self.analyse_failure(job)
+                    self.attempt_resubmission(job)
         else:
             self.message(job, 'no action implemented, doing nothing')
 
-    def analyse_failure(self, job):
+    def attempt_resubmission(self, job):
         logger.debug('Analyzing failure for job %s', job)
         job.failurecount += 1
         if job.classad:
@@ -698,10 +748,20 @@ class HTCondorUpdater(object):
                 job.schedd.act(htcondor.JobAction.Release, job.spec())
                 logger.info('Made edit call the schedd %s', job.schedd)
                 self.new_todoitem.move(job, 'idle')
-            else:
-                self.permanent_failure(job)
-        else:
-            self.permanent_failure(job)
+                self.email_event(
+                    cjm.EventCodes.job_resubmitted,
+                    self.new_todoitem,
+                    job = job,
+                    details = (
+                        'Resubmitted with RequestMemory = %s '
+                        '(previously MemoryUsage = %s, RequestMemory = %s)',
+                        new_request_memory, used_memory, request_memory
+                        ),
+                    current_resubmission_count = self.new_todoitem.total_resubmission_count
+                    )
+                self.new_todoitem.total_resubmission_count += 1
+                return
+        self.permanent_failure(job)
 
     def permanent_failure(self, job):
         self.message(job, 'failed with no resubmission options')
@@ -722,13 +782,15 @@ class HTCondorUpdater(object):
                 )
         stderr = job.get_stderr()
         if stderr:
-            logger.info('Tail of %s:\n%s', stderr['file'], stderr['stderr'])
+            logger.info('Tail of %s:\n%s', job.stderr_file, stderr)
         self.new_todoitem.move(job, 'failed')
-
-
-
-
-
+        self.email_event(
+            cjm.EventCodes.job_permanently_failed,
+            self.new_todoitem,
+            job = job,
+            current_failure_count = self.new_todoitem.total_failure_count
+            )
+        self.new_todoitem.total_failure_count += 1
 
 
 

@@ -49,7 +49,7 @@ import cjm
 class TestHTCondorMockSetup(TestCase):
 
     def setUp(self):
-        self.todo_state_dict = {
+        self.todoitem_dict = {
             'cluster_id' : '63826560',
             'submission_path' : 'fake/test/path',
             'all' : '0,1',
@@ -81,7 +81,7 @@ class TestHTCondorMockSetup(TestCase):
             ]
         htcondor.Schedd.return_value.xquery.return_value = self.ads
         htcondor.Schedd.return_value.history.return_value = self.ads[:1]
-        self.todo_state = cjm.HTCondorTodoItem.from_section('test', self.todo_state_dict)
+        self.todoitem = cjm.HTCondorTodoItem.from_section('test', self.todoitem_dict)
 
 
 class TestBasic(TestHTCondorMockSetup):
@@ -96,12 +96,12 @@ class TestBasic(TestHTCondorMockSetup):
         self.assertEqual(str(jobs[0]['ClusterId']), '63826560')
 
     def test_todo_item_reading(self):
-        self.todo_state.debug_log()
-        self.assertEqual(self.todo_state.all, [0, 1])
+        self.todoitem.debug_log()
+        self.assertEqual(self.todoitem.all, [0, 1])
 
     def test_make_diff(self):
         qstate = cjm.HTCondorQueueState('63826560').read()
-        diff = cjm.HTCondorUpdater(self.todo_state, qstate)
+        diff = cjm.HTCondorUpdater(self.todoitem, qstate)
         diff.update()
 
     def test_get_history(self):
@@ -109,23 +109,23 @@ class TestBasic(TestHTCondorMockSetup):
         self.assertEqual(history['JobStatus'], 5)
 
     def test_copy_todo_item_is_shallow_for_job_instances(self):
-        self.todo_state.jobs[0].testlist = ['test']
-        new_todo_state = self.todo_state.copy()
-        self.assertIsNot(self.todo_state.jobs, new_todo_state.jobs)
-        self.assertIs(self.todo_state.jobs[0], new_todo_state.jobs[0])
-        self.assertIs(self.todo_state.jobs[0].testlist, new_todo_state.jobs[0].testlist)
+        self.todoitem.jobs[0].testlist = ['test']
+        new_todoitem = self.todoitem.copy()
+        self.assertIsNot(self.todoitem.jobs, new_todoitem.jobs)
+        self.assertIs(self.todoitem.jobs[0], new_todoitem.jobs[0])
+        self.assertIs(self.todoitem.jobs[0].testlist, new_todoitem.jobs[0].testlist)
 
     def test_move_job(self):
-        job = self.todo_state.jobs[0]
-        self.todo_state.move(job, 'failed')
-        self.assertIs(job, self.todo_state.get_jobs_in_state('failed')[0])
+        job = self.todoitem.jobs[0]
+        self.todoitem.move(job, 'failed')
+        self.assertIs(job, self.todoitem.get_jobs_in_state('failed')[0])
 
 
 class TestDiff(TestHTCondorMockSetup):
 
     def get_basic_diff(self):
         qstate = cjm.HTCondorQueueState('63826560').read()
-        diff = cjm.HTCondorUpdater(self.todo_state, qstate)
+        diff = cjm.HTCondorUpdater(self.todoitem, qstate)
         return qstate, diff
 
     def test_make_diff(self):
@@ -135,15 +135,15 @@ class TestDiff(TestHTCondorMockSetup):
     def test_makes_permanent_failure_for_removed_status(self):
         self.ads[0]['JobStatus'] = 3
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.update()
-        self.assertEqual(new_todo_state.get_jobs_in_state('failed')[0].proc_id, self.ads[0].proc_id)
+        new_todoitem = diff.update()
+        self.assertEqual(new_todoitem.get_jobs_in_state('failed')[0].proc_id, self.ads[0].proc_id)
 
     def test_resubmit_for_memory_exceeding(self):
         ad = self.ads[0]
         ad['HoldReasonCode'] = 34
         ad['MemoryUsage'] = 2100
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.update()
+        new_todoitem = diff.update()
         htcondor.Schedd.return_value.edit.assert_called_with(
             '{0}.{1}'.format(ad['ClusterId'], ad['ProcId']),
             'RequestMemory',
@@ -155,34 +155,50 @@ class TestDiff(TestHTCondorMockSetup):
         del self.ads[1]
         self.ads[0]['ExitCode'] = 0 # history is mocked to return first ad, this is hacky
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.update()
-        self.assertEqual(new_todo_state.get_jobs_in_state('done')[0].proc_id, ad['ProcId'])
+        new_todoitem = diff.update()
+        self.assertEqual(new_todoitem.get_jobs_in_state('done')[0].proc_id, ad['ProcId'])
 
     def test_becomes_failed_for_unlisted_exitcode_nonzero(self):
         ad = self.ads[1]
         del self.ads[1]
         self.ads[0]['ExitCode'] = 9 # history is mocked to return first ad, this is hacky
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.update()
-        self.assertEqual(new_todo_state.get_jobs_in_state('failed')[0].proc_id, ad['ProcId'])
+        new_todoitem = diff.update()
+        self.assertEqual(new_todoitem.get_jobs_in_state('failed')[0].proc_id, ad['ProcId'])
 
     def test_is_finished(self):
-        del self.todo_state_dict['idle']
-        self.todo_state_dict['done'] = '0'
-        self.todo_state_dict['failed'] = '1'
-        self.todo_state = cjm.HTCondorTodoItem.from_section('test', self.todo_state_dict)
-        self.todo_state.debug_log()
-        self.assertTrue(self.todo_state.is_finished()['finished'])
+        del self.todoitem_dict['idle']
+        self.todoitem_dict['done'] = '0'
+        self.todoitem_dict['failed'] = '1'
+        self.todoitem = cjm.HTCondorTodoItem.from_section('test', self.todoitem_dict)
+        self.todoitem.debug_log()
+        self.assertTrue(self.todoitem.is_finished()['finished'])
 
     def test_is_finished_after_update(self):
-        del self.todo_state_dict['idle']
-        self.todo_state_dict['done'] = '0'
-        self.todo_state_dict['failed'] = '1'
-        self.todo_state = cjm.HTCondorTodoItem.from_section('test', self.todo_state_dict)
+        del self.todoitem_dict['idle']
+        self.todoitem_dict['done'] = '0'
+        self.todoitem_dict['failed'] = '1'
+        self.todoitem = cjm.HTCondorTodoItem.from_section('test', self.todoitem_dict)
         htcondor.Schedd.return_value.xquery.return_value = []
         qstate, diff = self.get_basic_diff()
-        new_todo_state = diff.update()
-        self.assertTrue(new_todo_state.is_finished()['finished'])
+        new_todoitem = diff.update()
+        self.assertTrue(new_todoitem.is_finished()['finished'])
+
+
+class TestTodoList(TestHTCondorMockSetup):
+    """docstring for TestTodoList"""
+
+    def setUp(self):
+        super(TestTodoList, self).setUp()
+        del self.todoitem_dict['idle']
+        self.todoitem_dict['done'] = '0'
+        self.todoitem_dict['failed'] = '1'
+        self.todolist = cjm.TodoList(_dict={self.todoitem_dict['cluster_id'] : self.todoitem_dict})
+
+    def test_something(self):
+        self.todolist.update()
+        
+
 
 class TestUtils(TestCase):
 

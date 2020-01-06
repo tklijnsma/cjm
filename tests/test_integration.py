@@ -149,10 +149,7 @@ class TestIntegration(TestCase):
         wait_for_job_to_finish(cluster_id, 0)
 
         logger.info('Opening todo list and performing update')
-        todolist = cjm.TodoList().update()
-        logger.info('Getting the todo item class')
-        todoitem = todolist.get_todoitem(str(cluster_id))
-        todoitem.debug_log()
-        self.assertEqual(len(todoitem.jobs), 1)
-        self.assertEqual(todoitem.get_state(0), 'failed')
+        todolist = cjm.TodoList()        
+        new_todolist = todolist.update()
+        self.assertEqual(len(new_todolist.get_section_titles()), 0)
 

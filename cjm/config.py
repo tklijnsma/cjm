@@ -103,6 +103,10 @@ class Config(object):
             'MachineAttrMachine2',
             'LastRemoteHost',
             ]
+
+        self.email_for_first_n_resubmissions = 10
+        self.email_for_first_n_failures = 10
+
         self.append_htcondor_paths()
         self.init_condor_calls()
 

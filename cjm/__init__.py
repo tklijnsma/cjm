@@ -59,4 +59,5 @@ def reload_config(config_name):
 CONFIG = reload_config(CJM_CONF)
 
 from .cluster import Cluster
+from .email import Email, EventCodes
 from .todo import TodoList, HTCondorTodoItem, HTCondorQueueState, HTCondorUpdater

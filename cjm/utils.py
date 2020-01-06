@@ -3,6 +3,7 @@
 import os, shutil, logging, sys, subprocess, re
 import os.path as osp
 import cjm
+from six import string_types
 logger = logging.getLogger('cjm')
 
 def _create_directory_no_checks(dirname, dry=False):
@@ -79,7 +80,7 @@ def run_command(cmd, env=None, dry=False, shell=False):
     Runs a command using subprocess, and logs and returns output.
 
     :param cmd: Command to run as a list of arguments
-    :type cmd: str
+    :type cmd: list
     :param env: Dict with environment variables to set for this command only
     :type env: dict
     :param dry: If set to `True`, the command is only printed
@@ -90,7 +91,8 @@ def run_command(cmd, env=None, dry=False, shell=False):
     logger.warning('Issuing command: {0}'.format(' '.join(cmd)))
     if dry: return
     if shell:
-        cmd = ' '.join(cmd)
+        if not(isinstance(cmd, string_types)):
+            cmd = ' '.join(cmd)
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
