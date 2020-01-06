@@ -149,6 +149,26 @@ def get_job_history_htcondor(cluster_id, proc_id, schedd=None, projection=None):
     else:
         return jobs[0]
 
+def get_cluster_history_htcondor(cluster_id, schedd=None, projection=None):
+    logger.debug('Getting history for cluster %s, schedd %s', cluster_id, schedd)
+    import htcondor
+    projection = [] if projection is None else projection
+    if schedd is None:
+        logger.debug('No scheduler specified, looking in all schedds')
+        schedds = cjm.CONFIG.schedds
+    else:
+        schedds = [schedd]
+    # Get jobs from all needed schedulers
+    jobs = []
+    for schedd in schedds:
+        jobs.extend(list(schedd.history(
+            requirements = 'ClusterId == {0}'.format(cluster_id),
+            projection = projection,
+            )))
+    logger.info('Found %s jobs in history for cluster %s', len(jobs), cluster_id)
+    return jobs
+
+
 def tail(file, n=10):
     """
     Reads last n lines of a file using the GNU tail utility

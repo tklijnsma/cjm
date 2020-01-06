@@ -139,7 +139,7 @@ class TestIntegration(TestCase):
         todoitem.debug_log()
         self.assertEqual(len(todoitem.jobs), 2)
         self.assertEqual(todoitem.get_state(0), 'done')
-        self.assertIn(todoitem.get_state(1), ['idle', 'running'])
+        self.assertIn(todoitem.get_state(1), ['idle', 'running', 'done'])
 
     def test_state_change_to_failed(self):
         clean_todolist = cjm.TodoList()

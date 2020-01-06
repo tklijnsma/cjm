@@ -350,6 +350,65 @@ class HTCondorTodoItem(object):
         return r
 
 
+class HTCondorClusterHistory(object):
+    """
+    Container class for classads from the htcondor history
+    Retrieving the history is an expensive operation, so it should be done
+    as little as possible.
+    This class saves any instantiated history requests, and uses the saved history
+    whenever possible.
+    """
+
+    _cluster_ids = []
+    _cluster_id_to_instance = {}
+
+    @classmethod
+    def get(cls, cluster_id, proc_id=None):
+        """
+        If proc_id is None, returns an instance for cluster_id
+        If proc_id is defined, returns the job for proc_id in cluster_id
+        """
+        if not cluster_id in cls._cluster_ids:
+            instance = cls(cluster_id)
+        else:
+            instance = cls._cluster_id_to_instance[cluster_id]
+        if not(proc_id is None):
+            return instance.get_job(proc_id)
+        else:
+            return instance
+
+    @classmethod
+    def register(cls, instance):
+        """
+        Called whenever a new HTCondorClusterHistory is instantiated.
+        Saves the instance to a class variable for easy access later.
+        Storing the history in memory is cheap, calling the history from
+        htcondor is very expensive, so better keep it.
+        """
+        cls._cluster_ids.append(instance.cluster_id)
+        cls._cluster_id_to_instance[instance.cluster_id] = instance
+
+    def __init__(self, cluster_id):
+        super(HTCondorClusterHistory, self).__init__()
+        self.cluster_id = cluster_id
+        self.jobs = cjm.utils.get_cluster_history_htcondor(self.cluster_id)
+        self.__class__.register(self)
+
+    def get_job(self, proc_id):
+        jobs = [ j for j in self.jobs if int(j['ProcId']) == int(proc_id) ]
+        if len(jobs) == 0:
+            logger.debug('No history for job %s in cluster %s', proc_id, self.cluster_id)
+            return None
+        elif len(jobs) == 1:
+            logger.debug('Found history for job %s in cluster %s', proc_id, self.cluster_id)
+            return jobs[0]
+        else:
+            raise ValueError(
+                'Unexpected history count %s for job %s in cluster %s',
+                len(jobs), proc_id, self.cluster_id
+                )
+
+
 class HTCondorJob(object):
     """docstring for HTCondorJob"""
     def __init__(self, cluster_id, proc_id):
@@ -401,10 +460,12 @@ class HTCondorJob(object):
             )
 
     def history(self):
-        if not self._iscalled_history:
-            self._history = cjm.utils.get_job_history_htcondor(self.cluster_id, self.proc_id)
-            self._iscalled_history = True
+        self._history = HTCondorClusterHistory.get(self.cluster_id, self.proc_id)
         return self._history
+        # if not self._iscalled_history:
+        #     self._history = cjm.utils.get_job_history_htcondor(self.cluster_id, self.proc_id)
+        #     self._iscalled_history = True
+        # return self._history
 
     def spec(self):
         return '{0}.{1}'.format(self.cluster_id, self.proc_id)

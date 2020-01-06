@@ -10,8 +10,6 @@ if 'CJM_ROTFILEHANDLER' in os.environ:
     # emitted *during* the configuration
     add_rotating_file_handler(os.environ['CJM_ROTFILEHANDLER'], delete_other_handlers=True)
 
-logger.info('Running with env: %s', os.environ)
-
 from . import utils
 
 # Default dir to save files related to the module
