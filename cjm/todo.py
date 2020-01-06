@@ -129,7 +129,7 @@ class TodoList(object):
         :param command_line: the command line that would normally be submitted to condor_submit
         :type command_line: list
         """
-        new_todo = configparser.ConfigParser()
+        new_todo = copy.deepcopy(self.todo)
         cluster_id, n_jobs, output = cjm.utils.submit(command_line)
         new_item = {
             'cluster_id' : str(cluster_id),
