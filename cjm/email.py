@@ -179,7 +179,7 @@ class EmailTodoItemSection(object):
 
         job.get_stderr()
         if job.stderr:
-            message.append('Tail of %s:\n%s', job.stderr_file, job.stderr)
+            message.append('Tail of {0}:\n{1}'.format(job.stderr_file, job.stderr))
 
         message = '\n'.join(message)
         return 20, message

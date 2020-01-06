@@ -173,7 +173,7 @@ def tail(file, n=10):
     """
     Reads last n lines of a file using the GNU tail utility
     """
-    return run_command(['tail', '-n', str(n), file])
+    return '\n'.join(run_command(['tail', '-n', str(n), file]))
 
 
 def submit(command_line):

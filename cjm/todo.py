@@ -202,6 +202,7 @@ class HTCondorTodoItem(object):
         logger.debug('All proc_ids: %s', self.all)
         for proc_id in sorted(self.all):
             job = HTCondorJob(self.cluster_id, proc_id)
+            job.set_parent_todoitem(self)
             self.jobs.append(job)
             self._jobs_by_procid[proc_id] = job
         logger.debug('Created jobs: %s', self.jobs)
@@ -490,7 +491,7 @@ class HTCondorJob(object):
         elif stderr_file.startswith('/'):
             logger.info('stderr_file %s looks like an absolute path')
         else:
-            logger.info('stderr_file %s looks like a relative path; finding submission_path')
+            logger.info('stderr_file %s looks like a relative path; finding submission_path', stderr_file)
             # Need the submission path from the parent; path to stderr is typically relative
             if not self._isset_todoitem:
                 logger.info('No parent todoitem set')
@@ -507,7 +508,7 @@ class HTCondorJob(object):
         if not stderr_file:
             return False
         elif not osp.isfile(stderr_file):
-            logger.warning('%s is not a file, cannot retrieve stderr')
+            logger.warning('%s is not a file, cannot retrieve stderr', stderr_file)
             return False
         self.stderr_file = stderr_file
         self.stderr = cjm.utils.tail(stderr_file, 10)
@@ -584,7 +585,8 @@ class HTCondorQueueState(object):
             'JobStatus',
             'HoldReason',
             'HoldReasonCode',
-            'HoldReasonSubCode'
+            'HoldReasonSubCode',
+            'Err',
             ]
         self.requirements = (
             'Owner=="{0}" '
